@@ -19,8 +19,6 @@ from deep_translator import GoogleTranslator
 from google import genai
 from groq import Groq
 from apscheduler.schedulers.background import BackgroundScheduler
-from ecocal import Calendar # 🎯 కొత్తగా add చేసింది సర్
-import pandas as pd  # 🎯 ఇది add చేయండి
 
 # --- SYSTEM ENCODING ---
 sys.stdout.reconfigure(encoding='utf-8')
@@ -61,7 +59,7 @@ gap_alert_sent = {}
 collected_news = []
 last_sent_results = set()
 last_reset_date = datetime.now(IST).date()
-economic_calendar_cache = {} # 🎯 Calendar cache సర్
+economic_calendar_cache = {} # 🎯 Cache స్టోర్ సార్
 
 MAX_NEWS = 5000
 CLEAR_COUNT = 1000
@@ -106,9 +104,9 @@ MARKET_KEYWORDS = [
     "ప్రభుత్వ నిర్ణయం", "బడ్జెట్", "ద్రవ్యోల్బణం",
     "war", "strike", "strikes", "attack", "attacks", "military", "sanctions", "iran", "us-iran",
     "crude", "oil", "brent", "opec", "omc", "dollar", "crude spike", "above $", "surge",
-    "యుద్ధం", "దాడి", "దాడులు", "సైనిక", "ఆంక్షలు", "ఇరాన్", "చమురు", "క్రూడ్", "డాలర్", "crude oil",
+    "యుద్ధం", "దాడి", "దాడులు", "సైనిక", "ఆंక్షలు", "ఇరాన్", "చమురు", "క్రూడ్", "డాలర్", "crude oil",
     "market crash", "circuit breaker", "scam", "sebi ban", "emergency", "urgent", "breaking",
-    "అత్యవసర", "rbi mpc", "mpc", "rupee", "రూపాయి"
+    "అत्यవసర", "rbi mpc", "mpc", "rupee", "రూపాయి"
 ]
 
 IMPORTANT_KEYWORDS = MARKET_KEYWORDS + [stock.lower() for stock in MY_WATCHLIST]
@@ -446,145 +444,123 @@ def check_gap_alert(name, price, prev_close, current_date):
         gap_alert_sent[gap_key] = True
 
 # ==========================================================
-# 📅 NEW ECOCAL INTEGRATION - 100% FREE ECONOMIC CALENDAR 🎯
+# 📅 100% FREE ECONOMIC CALENDAR - PANDAS & ECOCAL FREE! 🎯
 # ==========================================================
 def fetch_economic_calendar_data(start_date, end_date):
-    """ecocal package తో economic calendar data తీసుకోవడం - API key అక్కర్లేదు సర్"""
+    """Faireconomy JSON API ద్వారా బ్యాక్‌గ్రౌండ్ డేటా తెచ్చుకోవడం - cache సపోర్ట్‌తో సార్"""
     global economic_calendar_cache
     cache_key = f"{start_date}_{end_date}"
 
-    # Cache check - ఒకసారి తెచ్చిన data మళ్లీ scrape చేయకుండా
     if cache_key in economic_calendar_cache:
-        log("📅 Economic calendar data from cache")
         return economic_calendar_cache[cache_key]
 
     try:
-        log(f"📅 Fetching economic calendar from {start_date} to {end_date}...")
-        # nbThreads=1 పెడితే 429 error రాదు సర్
-        ec = Calendar(startHorizon=start_date, endHorizon=end_date, withDetails=True, nbThreads=1)
-        df = ec.getCalendar()
-
-        if df.empty:
-            log("⚠ Economic calendar empty")
+        log(f"📅 Fetching economic data directly from Faireconomy JSON API...")
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        res = requests.get(url, headers=HEADERS, timeout=20)
+        if res.status_code != 200:
             return None
-
-        # Cache లో save చేయండి
-        economic_calendar_cache[cache_key] = df
-        log(f"✅ Economic calendar loaded: {len(df)} events")
-        return df
-
+            
+        data = res.json()
+        economic_calendar_cache[cache_key] = data
+        return data
     except Exception as e:
         log(f"❌ Economic calendar fetch error: {e}", "ERROR")
         return None
 
 def fetch_economic_calendar(days=1):
-    """తదుపరి 24 గంటల్లో అన్ని ఈవెంట్స్ - Low/Medium/High అన్నీ"""
+    """తదుపరి 24 గంటల్లో/వారంలో వచ్చే అన్ని ముఖ్యాంశాలు - పక్కా ఫోరెక్స్ ఫ్యాక్టరీ లైవ్ డేటా సార్"""
     try:
         now_ist = datetime.now(IST)
-        start_datetime = now_ist
-        end_datetime = now_ist + timedelta(hours=24)
+        today_str = now_ist.strftime('%Y-%m-%d')
         
-        start_date = start_datetime.strftime('%Y-%m-%d')
-        end_date = end_datetime.strftime('%Y-%m-%d')
-        
-        log(f"📅 Fetching 24hr calendar from {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%Y-%m-%d %H:%M')}")
-        
-        df = fetch_economic_calendar_data(start_date, end_date)
-        
-        if df is None or df.empty:
-            return "☀ <b>తదుపరి 24 గంటల్లో ఎటువంటి ఈవెంట్స్ లేవు చంటి గారు.</b>"
-        
-        # 🎯 FIX: UTC నుండి IST కి convert చేయండి
-        df['DateTime'] = pd.to_datetime(df['Start'], format='%m/%d/%Y %H:%M:%S', errors='coerce', utc=True).dt.tz_convert(IST)
-        
-        # ఇప్పుడు రెండూ IST timezone లో ఉన్నాయి కాబట్టి compare అవుతుంది
-        df = df[df['DateTime'] >= start_datetime]
-        df = df[df['DateTime'] <= end_datetime]
-        
-        if df.empty:
-            return "☀ <b>తదుపరి 24 గంటల్లో ఈవెంట్స్ ఏవీ లేవు చంటి గారు.</b>"
-        
-        # Impact wise sort - HIGH ముందు, తర్వాత MEDIUM, తర్వాత LOW
-        impact_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
-        df['ImpactOrder'] = df['Impact'].str.upper().map(impact_order)
-        df = df.sort_values(by=['ImpactOrder', 'DateTime'])
-        
-        report = f"📅 <b>తదుపరి 24 గంటల ఆర్థిక క్యాలెండర్</b>\n"
-        report += f"🕒 {start_datetime.strftime('%d-%b %I:%M %p')} నుండి {end_datetime.strftime('%d-%b %I:%M %p')} వరకు\n\n"
+        # డేటా లోడింగ్
+        events = fetch_economic_calendar_data(today_str, today_str)
+        if not events:
+            return "⚠️ <b>ఆర్థిక క్యాలెండర్ డేటా లోడ్ అవ్వలేదు చంటి గారు.</b>"
+            
+        report = f"📅 <b>ఆర్థిక క్యాలెండర్ రిపోర్ట్ (Forex Factory Live)</b>\n"
+        report += f"🕒 {now_ist.strftime('%d-%b %I:%M %p')} సమయానికి సార్\n\n"
         
         country_names = {
-            'US': 'United States 🇺🇸', 'IN': 'India 🇮🇳', 'JP': 'Japan 🇯🇵', 
-            'CN': 'China 🇨🇳', 'DE': 'Germany 🇩🇪', 'GB': 'UK 🇬🇧',
-            'EU': 'Euro Zone 🇪🇺', 'AU': 'Australia 🇦🇺', 'CA': 'Canada 🇨🇦',
-            'CH': 'Switzerland 🇨🇭', 'NZ': 'New Zealand 🇳🇿'
+            'USD': 'United States 🇺🇸', 'INR': 'India 🇮🇳', 'JPY': 'Japan 🇯🇵', 
+            'CNY': 'China 🇨🇳', 'EUR': 'Euro Zone 🇪🇺', 'GBP': 'UK 🇬🇧',
+            'AUD': 'Australia 🇦🇺', 'CAD': 'Canada 🇨🇦', 'CHF': 'Switzerland 🇨🇭', 
+            'NZD': 'New Zealand 🇳🇿'
         }
         
-        for _, row in df.iterrows():
-            impact_val = str(row['Impact']).upper()
-            if impact_val == 'HIGH':
-                impact_icon = "🔴 High"
-            elif impact_val == 'MEDIUM':
-                impact_icon = "🟡 Medium"
-            else:
-                impact_icon = "⚪ Low"
+        events_found = 0
+        for item in events:
+            impact_val = str(item.get('impact', '')).upper()
+            if impact_val not in ['HIGH', 'MEDIUM']: 
+                continue
                 
-            event_time = row['DateTime'].strftime('%d %b, %I:%M %p')
-            telugu_name = translate_to_telugu(row['Name'])
-            country = country_names.get(row['countryCode'], row['countryCode'])
+            full_date_raw = item.get('date', '')
+            clean_date = full_date_raw.split('T')[0] if 'T' in full_date_raw else full_date_raw
             
-            actual_val = row['actual'] if pd.notna(row['actual']) else "Waiting... ⏳"
-            forecast_val = row['consensus'] if pd.notna(row['consensus']) else "N/A"
-            prev_val = row['previous'] if pd.notna(row['previous']) else "N/A"
+            # ఒకవేళ సింగిల్ డే ఫిల్టర్ అయితే ఈరోజు మాత్రమే చూస్తాం
+            if days == 1 and clean_date != today_str:
+                continue
+                
+            event_name = item.get('title', 'Economic Event')
+            country_code = item.get('country', 'Global')
+            country = country_names.get(country_code, country_code)
             
-            report += f"📅 <b>{event_time}</b>\n"
-            report += f"🌍 {country} | {row['Name']}\n"
+            try:
+                dt_obj = datetime.fromisoformat(full_date_raw.replace('Z', '+00:00'))
+                event_time_str = dt_obj.astimezone(IST).strftime('%d %b, %I:%M %p')
+            except:
+                event_time_str = f"{clean_date} {item.get('time', '')}"
+                
+            telugu_name = translate_to_telugu(event_name)
+            actual_val = item.get('actual') if item.get('actual') else "Waiting... ⏳"
+            forecast_val = item.get('forecast') if item.get('forecast') else "N/A"
+            prev_val = item.get('previous') if item.get('previous') else "N/A"
+            
+            impact_icon = "🔴 High" if impact_val == 'HIGH' else "🟡 Medium"
+            
+            report += f"📅 <b>{event_time_str}</b>\n"
+            report += f"🌍 {country} | {event_name}\n"
             report += f"📝 <b>వివరణ:</b> {telugu_name}\n"
             report += f"✅ Actual: <b>{actual_val}</b> | Est: {forecast_val} | Prev: {prev_val}\n"
             report += f"🔥 ఇంపాక్ట్: {impact_icon}\n"
             report += "──────────────────\n\n"
-        
+            events_found += 1
+            
+        if events_found == 0:
+            return "☀ <b>ఈ టైమ్ విండోలో ముఖ్యమైన హై/మీడియం ఈవెంట్స్ ఏవీ లేవు చంటి గారు.</b>"
+            
         return report
-        
     except Exception as e:
         log(f"❌ Calendar report error: {e}", "ERROR")
         return f"❌ సమస్య వచ్చింది: {str(e)[:150]}"
     
 def check_for_live_updates():
-    """Live economic calendar updates - ప్రతి నిమిషం check చేస్తుంది"""
+    """Live economic calendar updates - JSON నుండి ప్రతి నిమిషం చెక్ చేస్తుంది సార్"""
     global last_sent_results
     try:
         today = datetime.now(IST).strftime('%Y-%m-%d')
-        df = fetch_economic_calendar_data(today, today)
+        events = fetch_economic_calendar_data(today, today)
+        if not events: return
 
-        if df is None or df.empty:
-            return
+        for row in events:
+            impact_val = str(row.get('impact', '')).lower()
+            if impact_val not in ['high', 'medium']: continue
 
-        now_ist = datetime.now(IST)
+            event_name = row.get('title', '')
+            country = row.get('country', '')
+            actual = str(row.get('actual', '')).strip()
 
-        for _, row in df.iterrows():
-            # High/Medium impact మాత్రమే
-            if row['Impact'] not in ['High', 'Medium']:
-                continue
-
-            event_name = row['Event']
-            country = row['Country']
-            actual = str(row['Actual']) if row['Actual'] and str(row['Actual'])!= 'nan' else ""
-
-            # Actual value వచ్చిందా check చేయండి
-            if not actual or actual == 'nan' or actual == 'None':
+            if not actual or actual == 'nan' or actual == 'None' or actual == '': 
                 continue
 
             event_id = f"{event_name}_{country}_{today}"
+            if event_id in last_sent_results: continue
 
-            # Already sent అయితే skip చేయండి
-            if event_id in last_sent_results:
-                continue
+            estimate = str(row.get('forecast', 'N/A'))
+            prev = str(row.get('previous', 'N/A'))
+            display_time = row.get('time', '')
 
-            estimate = str(row['Forecast']) if row['Forecast'] and str(row['Forecast'])!= 'nan' else "N/A"
-            prev = str(row['Previous']) if row['Previous'] and str(row['Previous'])!= 'nan' else "N/A"
-            display_time = row['Time']
-
-            # AI analysis
             ai_analysis = get_groq_analysis(f"Event: {event_name}, Actual: {actual}, Expected: {estimate}, Country: {country}")
             telugu_event_name = translate_to_telugu(event_name)
 
@@ -602,7 +578,6 @@ def check_for_live_updates():
             )
             safe_send(msg, chat_id=CHAT_ID)
 
-            # VIP Alert
             if VIP_CHAT_ID:
                 log(f"🚀 VIP Important Event Detected: {event_name}. Processing Audio Alert...")
                 better_summary = get_vip_event_better_summary(event_name, country, actual, estimate, prev)
@@ -619,7 +594,6 @@ def check_for_live_updates():
 
             last_sent_results.add(event_id)
             log(f"🎯 Live Alert Sent for {event_name}.")
-
     except Exception as e:
         log(f"❌ Live Economic Update Error: {e}", "ERROR")
 
@@ -937,7 +911,7 @@ def trigger_all_pulse_history_logic(chat_id_to_send):
             safe_send(block, chat_id=chat_id_to_send)
             time.sleep(0.3)
             
-        bot.send_message(chat_id_to_send, "🔍 <b>ఇప్పుడు ఈ లిస్ట్ నుండి అతి ముఖ్యమైన వార్తలను ఏఐ చాలా లోతుగా విశ్లేషించి విడదీస్తోంది...</b>", parse_mode='HTML')
+        bot.send_message(chat_id_to_send, "🔍 <b>ఇప్పుడు ఈ లిస్ట్ నుండి అతి ముఖ్యమైన వార్తలను ఏఐ చాలా లోతుగా విశ్లేషించి విడదీోంది...</b>", parse_mode='HTML')
         
         history_payload = ""
         for idx, block in enumerate(unique_blocks):
@@ -1245,7 +1219,7 @@ def get_redbox_voice_summary(message):
         log(f"❌ Redbox Voice Process Error: {voice_err}", "ERROR")
 
 # ==========================================================
-# ⏱️ 3-IN-1 MASTER COMMAND: /get, /getx, /getred (ఇంగ్లీష్ సోది రహిత పక్కా కోడ్ 🚀)
+# ⏱️ 3-IN-1 MASTER COMMAND: /get, /getx, /getred
 # ==========================================================
 @bot.message_handler(commands=['get', 'getx', 'getred'])
 def get_news_by_time_master(message):
@@ -1267,7 +1241,6 @@ def get_news_by_time_master(message):
     if 'getred' in message.text: source_type = "REDBOX"
     elif 'getx' in message.text: source_type = "X"
 
-    # డేటా ఫిల్టరింగ్
     filtered = []
     for n in rss_news_store:
         if isinstance(n, dict) and n.get('time') >= target_time:
@@ -1278,40 +1251,33 @@ def get_news_by_time_master(message):
             elif source_type == "NORMAL" and n.get('type') == "NORMAL":
                 filtered.append(n)
 
-    # 🎯 లేటెస్ట్ ఫస్ట్
     filtered.sort(key=lambda x: x['time'], reverse=True)
 
     if not filtered:
         bot.send_message(message.chat.id, f"⏳ ఈ సమయం ({cutoff_display_str}) నుండి ఎటువంటి వార్తలు లేవు సార్.")
         return
 
-    # 🎯 SIMPLE SUBJECT GROUPING - First 3 words match
     grouped = {}
     for item in filtered:
         title = item.get('title', '').lower()
-        words = title.split()[:3] # మొదటి 3 words
+        words = title.split()[:3]
         subject_key = ' '.join(words) if words else 'general'
 
         if subject_key not in grouped:
             grouped[subject_key] = []
         grouped[subject_key].append(item)
 
-    # 🎯 SIMPLE FORMAT లో SEND చేయి - మీ Screenshot లాగా
     news_counter = 1
     for subject_key, items in grouped.items():
         for n in items:
-            news_time = n['time'].strftime('%H:%M') # 15:24 లాగా
-
-            # English Title
+            news_time = n['time'].strftime('%H:%M')
             eng_title = n.get('title', '')
 
-            # Telugu Title - Google Translator
             try:
                 tel_title = GoogleTranslator(source='auto', target='te').translate(eng_title)
             except:
                 tel_title = eng_title
 
-            # Description ఉంటే
             desc = ""
             if source_type == "NORMAL" and n.get('desc'):
                 try:
@@ -1320,9 +1286,7 @@ def get_news_by_time_master(message):
                 except:
                     desc = f"\n\n{n.get('desc', '')[:400]}"
 
-            # 🎯 మీ Screenshot Format
             msg = f"<b>News #{news_counter}</b>\n\n{safe_html_text(tel_title)}{desc}\n\n{news_time}"
-
             bot.send_message(message.chat.id, msg, parse_mode='HTML', disable_web_page_preview=True)
             news_counter += 1
             time.sleep(0.3)
@@ -1343,7 +1307,7 @@ def get_commands_list_text():
 def list_commands(message): safe_send(get_commands_list_text(), chat_id=message.chat.id)
 
 # ==========================================================
-# ⏱️ SMART DYNAMIC ALERTS ENGINE & SERVER (429 ని ఆపే పక్కా ప్లాన్ 🚀)
+# ⏱️ SMART DYNAMIC ALERTS ENGINE
 # ==========================================================
 job_defaults = {
     'misfire_grace_time': 900,
@@ -1351,15 +1315,9 @@ job_defaults = {
     'max_instances': 3
 }
 scheduler = BackgroundScheduler(timezone="Asia/Kolkata", job_defaults=job_defaults)
-
-# ఈరోజు ఉన్న లైవ్ ఈవెంట్స్ యొక్క ఒరిజినల్ టైమింగ్స్ స్టోర్ చేయడానికి గ్లోబల్ లిస్ట్ సార్
 today_active_event_windows = []
 
 def schedule_today_live_events():
-    """
-    ఉదయం రన్ అయ్యి, ఈరోజు ఏ ఏ సమయాల్లో హై/మీడియం ఈవెంట్స్ ఉన్నాయో 
-    వాటి టైమ్ విండోస్ ని ముందే పక్కాగా నోట్ చేసి పెట్టుకుంటుంది సార్.
-    """
     global today_active_event_windows
     log("🔮 Loading Today's Live Event Windows Dynamically...")
     
@@ -1371,28 +1329,23 @@ def schedule_today_live_events():
         events = res.json()
         now_ist = datetime.now(IST)
         today_str = now_ist.strftime('%Y-%m-%d')
-        
         today_active_event_windows.clear()
         
         for item in events:
-            impact_level = item.get('impact', '').lower()
+            impact_level = str(item.get('impact', '')).lower()
             if impact_level not in ['high', 'medium']: continue
             
             full_date_raw = item.get('date', '')
             clean_date = full_date_raw.split('T')[0] if 'T' in full_date_raw else full_date_raw
-            
-            # కేవలం ఈరోజు ఈవెంట్స్ మాత్రమే చూస్తాం
             if clean_date != today_str: continue
             
             event_time_raw = item.get("time", "").strip()
             if not event_time_raw or event_time_raw.lower() in ["all day", "tentative"]: continue
             
             try:
-                dt_obj = datetime.fromisoformat(full_date_raw)
+                dt_obj = datetime.fromisoformat(full_date_raw.replace('Z', '+00:00'))
                 event_ist = dt_obj.astimezone(IST)
                 
-                # 🎯 ఈవెంట్ కి 10 నిమిషాల ముందు నుండి, జరిగిన 25 నిమిషాల తర్వాత వరకు విండో లాక్ సార్!
-                # దీనివల్ల వాడు 7:30 ఈవెంట్ ని 7:32 కి అప్‌డేట్ చేసినా బాట్ అస్సలు మిస్ చేయదు.
                 start_check = event_ist - timedelta(minutes=10)
                 end_check = event_ist + timedelta(minutes=25)
                 
@@ -1404,11 +1357,6 @@ def schedule_today_live_events():
         log(f"❌ Error in Loading Windows: {e}", "ERROR")
 
 def smart_live_checker_master():
-    """
-    ప్రతి 1 నిమిషానికి ఒకసారి బ్యాక్‌గ్రౌండ్ లో రన్ అవుతుంది చంటి గారు. 
-    ప్రస్తుత టైమ్ ఏదైనా ఈవెంట్ విండో లోపల ఉంటేనే సైట్ నుండి డేటా తెస్తుంది సార్!
-    దీనివల్ల 429 ఎర్రర్ రాదు, లైవ్ రిజల్ట్ అస్సలు మిస్ అవ్వదు.
-    """
     now_ist = datetime.now(IST)
     is_in_window = False
     active_event_name = ""
@@ -1420,42 +1368,27 @@ def smart_live_checker_master():
             break
             
     if is_in_window:
-        log(f"🎯 Inside Live Event Window for '{active_event_name}'. Checking Forex Factory Feed...")
-        check_for_live_updates() # మన మెయిన్ ఒరిజినల్ లైవ్ అప్‌డేట్ ఫంక్షన్ రన్ అవుతుంది సార్
-    else:
-        # విండో లేనప్పుడు బాట్ సైలెంట్ గా ఉంటుంది, సర్వర్ మీద అస్సలు లోడ్ పడదు
-        pass
+        log(f"🎯 Inside Live Event Window for '{active_event_name}'. Checking JSON Feed...")
+        check_for_live_updates()
 
 def morning_master_job():
-    """
-    ఈ మాస్టర్ జాబ్ ఉదయం 7:15 కి రన్ అయ్యి ఛానెల్ కి మెసేజ్ పంపుతుంది,
-    అలాగే నేటి ఈవెంట్ టైమ్ విండోస్ అన్నింటినీ లోడ్ చేస్తుంది సార్.
-    """
     safe_send(f"☀️ <b>నేటి ముఖ్యమైన ఆర్థిక వార్తలు (Today Events):</b>\n\n{fetch_economic_calendar(1)}", chat_id=CHAT_ID)
     schedule_today_live_events()
 
 # --- BACKGROUND SCHEDULE JOBS ---
-# ఉదయం 7:15 కి డైలీ క్యాలెండర్ వెళ్తుంది + విండోస్ లాక్ అవుతాయి సార్
 scheduler.add_job(morning_master_job, 'cron', hour=5, minute=50)
-
-# ఆదివారం ఉదయం వీక్లీ క్యాలెండర్ వెళ్తుంది సార్
 scheduler.add_job(lambda: safe_send(f"📅 <b>వారపు ఆర్థిక క్యాలెండర్:</b>\n\n{fetch_economic_calendar(7)}", chat_id=CHAT_ID), 'cron', day_of_week='sun', hour=9, minute=20)
-
-# 🚀 ప్రతి 1 నిమిషానికి రన్ అయ్యే మాస్టర్ స్మార్ట్ చెక్కర్ (తిరుగులేని పక్కా సేఫ్టీ లాజిక్)
 scheduler.add_job(smart_live_checker_master, 'interval', minutes=1)
-
-# మార్కెట్ టేబుల్ ఇంటర్వెల్ (ప్రతి 10 నిమిషాలకి)
 scheduler.add_job(send_market_table, 'interval', minutes=10)
 scheduler.start()
 
-# బాట్ ఆన్ అవ్వగానే ఈరోజు మిగిలిన విండోస్ ని ముందే ఒకసారి ఆటోమేటిక్ గా లోడ్ చేసుకుంటుంది సార్
 try: schedule_today_live_events()
 except: pass
 
 # --- FLASK SERVER ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is running perfectly with Smart Window Logic!"
+def home(): return "Bot is running perfectly with Smart Window Logic (No Pandas Style)!"
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1466,7 +1399,7 @@ def run_server():
 # ==========================================================
 if __name__ == "__main__":
     log("🚀 Starting Combined Master Market Bot with Smart Dynamic Windows...")
-    try: safe_send("✅ చంటి గారు, కంబైన్డ్ మాస్టర్ బాట్ స్మార్ట్ టైమ్ విండో లాజిక్‌తో విజయవంతంగా ప్రారంభమైంది!")
+    try: safe_send("✅ చంటి గారు, కంబైన్డ్ మాస్టర్ బాట్ స్మార్ట్ టైమ్ విンドウ లాజిక్‌తో విజయవంతంగా ప్రారంభమైంది!")
     except: pass
 
     Thread(target=run_server).start()
