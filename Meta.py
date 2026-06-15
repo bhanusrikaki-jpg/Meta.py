@@ -457,7 +457,7 @@ def fetch_economic_calendar_data(start_date, end_date):
     try:
         log(f"📅 Fetching economic data directly from Faireconomy JSON API...")
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-        res = requests.get(url, headers=HEADERS, timeout=20)
+        res = requests.get(url, timeout=20)
         if res.status_code != 200:
             return None
             
