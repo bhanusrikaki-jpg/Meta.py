@@ -1,0 +1,15 @@
+cloudscraper==1.2.71
+requests==2.32.3
+pytz==2024.1
+feedparser==6.0.11
+pyTelegramBotAPI==4.25.0
+Flask==3.0.3
+gtts==2.5.1
+deep-translator==1.11.4
+google-generativeai==0.7.2
+groq==0.11.0
+apscheduler==3.10.4
+pandas==2.2.2
+ecocal==1.0.5
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1
